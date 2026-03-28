@@ -941,7 +941,12 @@ export default function App() {
       await signIn();
     } catch (err: any) {
       console.error("Shopkeeper Login Error:", err);
-      if (err.code !== 'auth/popup-closed-by-user') {
+      if (err.code === 'auth/operation-not-supported-in-this-environment' || err.code === 'auth/auth-domain-config-required') {
+        setToast({ 
+          message: 'আপনার ব্রাউজারে পপআপ ব্লক করা থাকতে পারে। অনুগ্রহ করে পপআপ এলাউ করুন অথবা নতুন ট্যাবে অ্যাপটি ওপেন করুন।', 
+          type: 'error' 
+        });
+      } else if (err.code !== 'auth/popup-closed-by-user') {
         setToast({ message: `লগইন ব্যর্থ হয়েছে: ${err.message}`, type: 'error' });
       }
     }
