@@ -23,7 +23,11 @@
       "properties": {
         "uid": { "type": "string", "description": "Firebase Auth UID." },
         "role": { "type": "string", "enum": ["shopkeeper", "customer"], "description": "The user's role." },
-        "phone": { "type": "string", "description": "The user's phone number (for customers)." }
+        "phone": { "type": "string", "description": "The user's phone number." },
+        "email": { "type": "string", "description": "The user's email address." },
+        "name": { "type": "string", "description": "The user's full name." },
+        "shopName": { "type": "string", "description": "The shop name (for shopkeepers)." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the user was created." }
       },
       "required": ["uid", "role"]
     },
@@ -53,10 +57,11 @@
         "senderPhone": { "type": "string", "description": "The phone number used to send the payment." },
         "transactionId": { "type": "string", "description": "The transaction ID or tracking number." },
         "status": { "type": "string", "enum": ["pending", "approved", "rejected"], "description": "The status of the notification." },
+        "isRead": { "type": "boolean", "description": "Whether the notification has been read by the customer (for status updates)." },
         "ownerId": { "type": "string", "description": "The UID of the shopkeeper who should receive this notification." },
         "timestamp": { "type": "string", "format": "date-time", "description": "When the notification was sent." }
       },
-      "required": ["customerId", "customerName", "amount", "method", "senderPhone", "transactionId", "status", "ownerId", "timestamp"]
+      "required": ["customerId", "customerName", "amount", "method", "senderPhone", "transactionId", "status", "isRead", "ownerId", "timestamp"]
     },
     "InAppMessage": {
       "title": "InAppMessage",
@@ -88,6 +93,10 @@
     "in_app_messages": {
       "schema": "InAppMessage",
       "description": "Collection of messages between shopkeepers and customers."
+    },
+    "users": {
+      "schema": "User",
+      "description": "Collection of user profiles (shopkeepers and customers)."
     }
   }
 }

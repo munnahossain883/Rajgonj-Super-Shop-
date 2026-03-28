@@ -5,7 +5,8 @@ import {
   signInWithPopup, 
   signOut, 
   createUserWithEmailAndPassword, 
-  signInWithEmailAndPassword 
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
@@ -23,4 +24,4 @@ export const googleProvider = new GoogleAuthProvider();
 
 export const signIn = () => signInWithPopup(auth, googleProvider);
 export const logout = () => signOut(auth);
-export { createUserWithEmailAndPassword, signInWithEmailAndPassword };
+export { createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail };

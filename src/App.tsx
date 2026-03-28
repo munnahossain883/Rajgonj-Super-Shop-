@@ -18,7 +18,7 @@ import {
   deleteDoc
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, db, signIn, logout, storage, createUserWithEmailAndPassword, signInWithEmailAndPassword } from './firebase';
+import { auth, db, signIn, logout, storage, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail } from './firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { 
   Plus, 
@@ -45,7 +45,10 @@ import {
   MessageSquare,
   Send,
   Eye,
-  EyeOff
+  EyeOff,
+  CheckCircle,
+  XCircle,
+  Clock
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { bn } from 'date-fns/locale';
@@ -201,6 +204,9 @@ export default function App() {
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
   const [isCustomerLogin, setIsCustomerLogin] = useState(false);
   const [isCustomerRegister, setIsCustomerRegister] = useState(false);
+  const [isShopkeeperLogin, setIsShopkeeperLogin] = useState(false);
+  const [isShopkeeperRegister, setIsShopkeeperRegister] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [shopkeeperInfo, setShopkeeperInfo] = useState<{ email?: string; phone?: string; name?: string } | null>(null);
@@ -290,6 +296,16 @@ export default function App() {
       unreadMessages.forEach(m => handleMarkMessageAsRead(m.id));
     }
   }, [isViewingMessages, activeConversationId, inAppMessages, user]);
+
+  // Mark payment notifications as read when notifications modal is opened
+  useEffect(() => {
+    if (isViewingNotifications && user && userRole === 'customer') {
+      const unreadNotifications = paymentNotifications.filter(n => 
+        !n.isRead && n.status !== 'pending'
+      );
+      unreadNotifications.forEach(n => handleMarkNotificationAsRead(n.id));
+    }
+  }, [isViewingNotifications, paymentNotifications, user, userRole]);
 
   const handleImageUpload = (file: File) => {
     const reader = new FileReader();
@@ -452,14 +468,25 @@ export default function App() {
     return unsubscribe;
   }, [user, userRole]);
 
-  // Fetch Payment Notifications (Shopkeeper)
+  // Fetch Payment Notifications
   useEffect(() => {
-    if (!user || userRole !== 'shopkeeper') {
+    if (!user) {
       setPaymentNotifications([]);
       return;
     }
     const path = 'payment_notifications';
-    const q = query(collection(db, path), where('ownerId', '==', user.uid), orderBy('timestamp', 'desc'));
+    let q;
+    if (userRole === 'shopkeeper') {
+      q = query(collection(db, path), where('ownerId', '==', user.uid), orderBy('timestamp', 'desc'));
+    } else if (userRole === 'customer') {
+      // Query by both UID (old) and customerProfile.id (new) if available
+      const targetId = customerProfile?.id || user.uid;
+      q = query(collection(db, path), where('customerId', '==', targetId), orderBy('timestamp', 'desc'));
+    } else {
+      setPaymentNotifications([]);
+      return;
+    }
+
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       setPaymentNotifications(docs);
@@ -468,7 +495,7 @@ export default function App() {
     });
 
     return unsubscribe;
-  }, [user, userRole]);
+  }, [user, userRole, customerProfile]);
 
   // Fetch In-App Messages
   useEffect(() => {
@@ -675,13 +702,14 @@ export default function App() {
     const path = 'payment_notifications';
     try {
       await addDoc(collection(db, path), {
-        customerId: user.uid,
+        customerId: customerProfile.id, // Use document ID instead of user.uid
         customerName: customerProfile.name,
         amount,
         method,
         senderPhone,
         transactionId,
         status: 'pending',
+        isRead: false,
         ownerId: customerProfile.ownerId,
         timestamp: Timestamp.now()
       });
@@ -692,11 +720,51 @@ export default function App() {
     }
   };
 
-  const handleUpdateNotificationStatus = async (id: string, status: 'approved' | 'rejected') => {
+  const handleUpdateNotificationStatus = async (notification: any, status: 'approved' | 'rejected') => {
     if (!user || userRole !== 'shopkeeper') return;
+    const id = notification.id;
     const path = `payment_notifications/${id}`;
     try {
-      await updateDoc(doc(db, 'payment_notifications', id), { status });
+      await updateDoc(doc(db, 'payment_notifications', id), { 
+        status,
+        isRead: false // Reset isRead so customer sees the update
+      });
+      
+      if (status === 'approved') {
+        let customerDocId = notification.customerId;
+        
+        // Verify if customerId is a document ID or a UID
+        const customerDocRef = doc(db, 'customers', customerDocId);
+        const customerDocSnap = await getDoc(customerDocRef);
+        
+        if (!customerDocSnap.exists()) {
+          // If not found by ID, it might be a UID. Search for the customer document by customerUid
+          const q = query(collection(db, 'customers'), where('customerUid', '==', customerDocId), where('ownerId', '==', user.uid));
+          const querySnap = await getDocs(q);
+          if (!querySnap.empty) {
+            customerDocId = querySnap.docs[0].id;
+          } else {
+            throw new Error('কাস্টমার রেকর্ড খুঁজে পাওয়া যায়নি।');
+          }
+        }
+
+        // Automatically add a transaction and update customer balance
+        const txPath = 'transactions';
+        await addDoc(collection(db, txPath), {
+          customerId: customerDocId,
+          amount: notification.amount,
+          type: 'debit', // Payment is a debit (customer paying off debt)
+          note: `পেমেন্ট অনুমোদন (${notification.method}) - ট্রানজেকশন আইডি: ${notification.transactionId}`,
+          ownerId: user.uid,
+          timestamp: Timestamp.now()
+        });
+
+        // Update customer balance
+        await updateDoc(doc(db, 'customers', customerDocId), {
+          totalBalance: increment(-notification.amount)
+        });
+      }
+
       setToast({ message: `পেমেন্ট ${status === 'approved' ? 'অনুমোদন' : 'প্রত্যাখ্যান'} করা হয়েছে`, type: 'success' });
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, path);
@@ -750,6 +818,15 @@ export default function App() {
       setToast({ message: 'আপনার উত্তর পাঠানো হয়েছে', type: 'success' });
     } catch (err) {
       handleFirestoreError(err, OperationType.WRITE, path);
+    }
+  };
+
+  const handleMarkNotificationAsRead = async (id: string) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'payment_notifications', id), { isRead: true });
+    } catch (err) {
+      console.error("Error marking notification as read:", err);
     }
   };
 
@@ -939,20 +1016,144 @@ export default function App() {
     }
   };
 
-  const handleShopkeeperLogin = async () => {
-    try {
-      await signIn();
-    } catch (err: any) {
-      console.error("Shopkeeper Login Error:", err);
-      if (err.code === 'auth/operation-not-supported-in-this-environment' || err.code === 'auth/auth-domain-config-required') {
-        setToast({ 
-          message: 'আপনার ব্রাউজারে পপআপ ব্লক করা থাকতে পারে। অনুগ্রহ করে পপআপ এলাউ করুন অথবা নতুন ট্যাবে অ্যাপটি ওপেন করুন।', 
-          type: 'error' 
-        });
-      } else if (err.code !== 'auth/popup-closed-by-user') {
-        setToast({ message: `লগইন ব্যর্থ হয়েছে: ${err.message}`, type: 'error' });
-      }
+  const handleForgotPassword = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get('email') as string;
+
+    if (!email) {
+      setToast({ message: 'অনুগ্রহ করে আপনার ইমেইল এড্রেস দিন।', type: 'error' });
+      setAuthLoading(false);
+      return;
     }
+
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setToast({ message: 'পাসওয়ার্ড রিসেট করার লিংক আপনার ইমেইলে পাঠানো হয়েছে। অনুগ্রহ করে ইমেইল চেক করুন।', type: 'success' });
+      setIsForgotPassword(false);
+      setIsShopkeeperLogin(true);
+    } catch (err: any) {
+      console.error("Password Reset Error:", err);
+      let errorMessage = 'পাসওয়ার্ড রিসেট লিংক পাঠানো যায়নি। আবার চেষ্টা করুন।';
+      if (err.code === 'auth/user-not-found') {
+        errorMessage = 'এই ইমেইল দিয়ে কোন একাউন্ট পাওয়া যায়নি।';
+      } else if (err.code === 'auth/invalid-email') {
+        errorMessage = 'অনুগ্রহ করে একটি সঠিক ইমেইল এড্রেস দিন।';
+      }
+      setToast({ message: errorMessage, type: 'error' });
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleShopkeeperAuth = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get('email') as string;
+    const password = formData.get('password') as string;
+    let phone = (formData.get('phone') as string)?.replace(/\D/g, '');
+    if (phone && phone.startsWith('880')) phone = phone.substring(2);
+    else if (phone && phone.startsWith('88')) phone = phone.substring(2);
+    
+    const name = formData.get('name') as string;
+    const shopName = formData.get('shopName') as string;
+    const loginIdentifier = formData.get('loginIdentifier') as string;
+
+    try {
+      if (isShopkeeperRegister) {
+        // Registration
+        if (!email || !password || !phone || !name || !shopName) {
+          setToast({ message: 'সবগুলো তথ্য সঠিকভাবে দিন', type: 'error' });
+          setAuthLoading(false);
+          return;
+        }
+
+        // Check if phone already exists for a shopkeeper
+        const qPhone = query(collection(db, 'users'), where('phone', '==', phone), where('role', '==', 'shopkeeper'));
+        const snapPhone = await getDocs(qPhone);
+        if (!snapPhone.empty) {
+          setToast({ message: 'এই ফোন নাম্বার দিয়ে ইতিমধ্যে একাউন্ট করা হয়েছে।', type: 'error' });
+          setAuthLoading(false);
+          return;
+        }
+
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const uid = userCredential.user.uid;
+
+        await setDoc(doc(db, 'users', uid), {
+          role: 'shopkeeper',
+          uid,
+          email,
+          phone,
+          name,
+          shopName,
+          createdAt: Timestamp.now()
+        });
+
+        // Sign out after registration so they have to log in manually as requested
+        await logout();
+        
+        setToast({ message: 'দোকানদার একাউন্ট সফলভাবে তৈরি হয়েছে। এখন লগইন করুন।', type: 'success' });
+        setIsShopkeeperRegister(false);
+        setIsShopkeeperLogin(true);
+      } else {
+        // Login
+        let authEmail = loginIdentifier.trim();
+        
+        // Normalize login identifier if it's a phone number
+        // Strip non-digits to check if it's a phone number
+        const digitsOnly = authEmail.replace(/\D/g, '');
+        if (digitsOnly.length >= 10 && (authEmail.startsWith('+') || authEmail.match(/^\d+$/) || authEmail.startsWith('88'))) {
+          let normalizedPhone = digitsOnly;
+          if (normalizedPhone.startsWith('880')) normalizedPhone = normalizedPhone.substring(2);
+          else if (normalizedPhone.startsWith('88')) normalizedPhone = normalizedPhone.substring(2);
+          
+          const q = query(collection(db, 'users'), where('phone', '==', normalizedPhone), where('role', '==', 'shopkeeper'));
+          const snap = await getDocs(q);
+          if (snap.empty) {
+            setToast({ message: 'এই ফোন নাম্বার দিয়ে কোন দোকানদার একাউন্ট পাওয়া যায়নি।', type: 'error' });
+            setAuthLoading(false);
+            return;
+          }
+          authEmail = snap.docs[0].data().email;
+        }
+
+        await signInWithEmailAndPassword(auth, authEmail, password);
+        setToast({ message: 'লগইন সফল হয়েছে', type: 'success' });
+      }
+    } catch (err: any) {
+      console.error("Shopkeeper Auth Error:", err);
+      let errorMessage = 'কিছু ভুল হয়েছে। আবার চেষ্টা করুন।';
+      
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+        errorMessage = 'ইমেইল/ফোন অথবা পাসওয়ার্ড ভুল। অনুগ্রহ করে সঠিক তথ্য দিন।';
+      } else if (err.code === 'auth/email-already-in-use') {
+        errorMessage = 'এই ইমেইল এড্রেসটি ইতিমধ্যে অন্য একটি একাউন্টে ব্যবহার করা হয়েছে। আপনি কি লগইন করতে চান?';
+        setToast({ message: errorMessage, type: 'error' });
+        // Automatically switch to login if they are on register
+        if (isShopkeeperRegister) {
+          setTimeout(() => {
+            setIsShopkeeperRegister(false);
+            setIsShopkeeperLogin(true);
+          }, 2000);
+        }
+        return;
+      } else if (err.code === 'auth/invalid-email') {
+        errorMessage = 'অনুগ্রহ করে একটি সঠিক ইমেইল এড্রেস দিন।';
+      } else if (err.code === 'auth/weak-password') {
+        errorMessage = 'পাসওয়ার্ড অন্তত ৬ অক্ষরের হতে হবে।';
+      }
+      
+      setToast({ message: errorMessage, type: 'error' });
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleShopkeeperLogin = async () => {
+    setIsShopkeeperLogin(true);
   };
 
   if (loading) {
@@ -1075,13 +1276,150 @@ export default function App() {
                 পিছনে যান
               </button>
             </form>
+          ) : isForgotPassword ? (
+            <form onSubmit={handleForgotPassword} className="space-y-4 text-left">
+              <h2 className="text-lg font-bold text-[#1a1a1a] mb-2">পাসওয়ার্ড রিসেট করুন</h2>
+              <p className="text-sm text-gray-500 mb-4">আপনার একাউন্টের ইমেইল এড্রেসটি দিন। আমরা আপনাকে পাসওয়ার্ড রিসেট করার একটি লিংক পাঠাবো।</p>
+              <div>
+                <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider mb-1">ইমেইল এড্রেস</label>
+                <input 
+                  name="email" 
+                  type="email" 
+                  required 
+                  className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                  placeholder="example@mail.com"
+                />
+              </div>
+              <button 
+                disabled={authLoading}
+                className="w-full bg-[#5A5A40] text-white py-4 rounded-full font-bold hover:bg-[#4a4a35] transition-colors disabled:opacity-50"
+              >
+                {authLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'রিসেট লিংক পাঠান'}
+              </button>
+              <button 
+                type="button"
+                onClick={() => { setIsForgotPassword(false); setIsShopkeeperLogin(true); }}
+                className="w-full text-sm text-[#5A5A40] font-bold hover:underline"
+              >
+                লগইন ফর্মে ফিরে যান
+              </button>
+            </form>
+          ) : isShopkeeperLogin || isShopkeeperRegister ? (
+            <form onSubmit={handleShopkeeperAuth} className="space-y-4 text-left">
+              {isShopkeeperRegister ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider mb-1">দোকানের নাম</label>
+                    <input 
+                      name="shopName" 
+                      type="text" 
+                      required 
+                      className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                      placeholder="দোকানের নাম লিখুন"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider mb-1">মালিকের নাম</label>
+                    <input 
+                      name="name" 
+                      type="text" 
+                      required 
+                      className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                      placeholder="মালিকের নাম লিখুন"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider mb-1">ফোন নাম্বার</label>
+                    <input 
+                      name="phone" 
+                      type="tel" 
+                      required 
+                      className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                      placeholder="017XXXXXXXX"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider mb-1">ইমেইল এড্রেস</label>
+                    <input 
+                      name="email" 
+                      type="email" 
+                      required 
+                      className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                      placeholder="example@mail.com"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider mb-1">ইমেইল অথবা ফোন নাম্বার</label>
+                  <input 
+                    name="loginIdentifier" 
+                    type="text" 
+                    required 
+                    className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                    placeholder="ইমেইল অথবা ফোন দিন"
+                  />
+                </div>
+              )}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider">পাসওয়ার্ড</label>
+                  {!isShopkeeperRegister && (
+                    <button 
+                      type="button"
+                      onClick={() => { setIsForgotPassword(true); setIsShopkeeperLogin(false); }}
+                      className="text-[10px] text-[#5A5A40] hover:underline font-bold"
+                    >
+                      পাসওয়ার্ড ভুলে গেছেন?
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <input 
+                    name="password" 
+                    type={showPassword ? "text" : "password"} 
+                    required 
+                    minLength={6}
+                    className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 pr-12 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                    placeholder="******"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-[#5A5A40] hover:text-[#1a1a1a] transition-colors"
+                  >
+                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
+              </div>
+              <button 
+                disabled={authLoading}
+                className="w-full bg-[#5A5A40] text-white py-4 rounded-full font-bold hover:bg-[#4a4a35] transition-colors disabled:opacity-50"
+              >
+                {authLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : (isShopkeeperRegister ? 'একাউন্ট তৈরি করুন' : 'লগইন করুন')}
+              </button>
+              <button 
+                type="button"
+                onClick={() => setIsShopkeeperRegister(!isShopkeeperRegister)}
+                className="w-full text-sm text-[#5A5A40] font-bold hover:underline"
+              >
+                {isShopkeeperRegister ? 'ইতিমধ্যে একাউন্ট আছে? লগইন করুন' : 'নতুন দোকানদার একাউন্ট তৈরি করুন'}
+              </button>
+              <button 
+                type="button"
+                onClick={() => { setIsShopkeeperLogin(false); setIsShopkeeperRegister(false); }}
+                className="w-full text-sm text-gray-400 hover:underline"
+              >
+                পিছনে যান
+              </button>
+            </form>
           ) : (
             <div className="space-y-4">
               <button 
                 onClick={handleShopkeeperLogin}
-                className="w-full bg-[#5A5A40] text-white py-4 rounded-full font-medium hover:bg-[#4a4a35] transition-colors flex items-center justify-center gap-3"
+                className="w-full bg-[#5A5A40] text-white py-4 rounded-full font-bold hover:bg-[#4a4a35] transition-colors flex items-center justify-center gap-3"
               >
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-6 h-6" alt="Google" referrerPolicy="no-referrer" />
+                <Store className="w-6 h-6" />
                 দোকানদার হিসেবে লগইন
               </button>
               <div className="flex items-center gap-4 py-2">
@@ -1157,7 +1495,7 @@ export default function App() {
                 )}
               </button>
             )}
-            {userRole === 'shopkeeper' && !liveSelectedCustomer && (
+            {(userRole === 'shopkeeper' || userRole === 'customer') && !liveSelectedCustomer && (
               <>
                 <button 
                   onClick={() => setIsViewingNotifications(true)} 
@@ -1165,19 +1503,29 @@ export default function App() {
                   title="নোটিফিকেশন"
                 >
                   <Bell className="w-5 h-5" />
-                  {(paymentNotifications.filter(n => n.status === 'pending').length + inAppMessages.filter(m => !m.isRead && m.receiverId === user?.uid).length) > 0 && (
-                    <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[10px] flex items-center justify-center rounded-full font-bold">
-                      {paymentNotifications.filter(n => n.status === 'pending').length + inAppMessages.filter(m => !m.isRead && m.receiverId === user?.uid).length}
-                    </span>
+                  {userRole === 'shopkeeper' ? (
+                    (paymentNotifications.filter(n => n.status === 'pending').length + inAppMessages.filter(m => !m.isRead && m.receiverId === user?.uid).length) > 0 && (
+                      <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[10px] flex items-center justify-center rounded-full font-bold">
+                        {paymentNotifications.filter(n => n.status === 'pending').length + inAppMessages.filter(m => !m.isRead && m.receiverId === user?.uid).length}
+                      </span>
+                    )
+                  ) : (
+                    (paymentNotifications.filter(n => !n.isRead && n.status !== 'pending').length + inAppMessages.filter(m => !m.isRead && m.receiverId === user?.uid).length) > 0 && (
+                      <span className="absolute top-1 right-1 w-4 h-4 bg-[#5A5A40] text-white text-[10px] flex items-center justify-center rounded-full font-bold">
+                        {paymentNotifications.filter(n => !n.isRead && n.status !== 'pending').length + inAppMessages.filter(m => !m.isRead && m.receiverId === user?.uid).length}
+                      </span>
+                    )
                   )}
                 </button>
-                <button 
-                  onClick={() => setIsEditingShopkeeperProfile(true)} 
-                  className="p-2 hover:bg-[#f5f5f0] rounded-full text-[#5A5A40] transition-colors"
-                  title="দোকানদার প্রোফাইল"
-                >
-                  <UserIcon className="w-5 h-5" />
-                </button>
+                {userRole === 'shopkeeper' && (
+                  <button 
+                    onClick={() => setIsEditingShopkeeperProfile(true)} 
+                    className="p-2 hover:bg-[#f5f5f0] rounded-full text-[#5A5A40] transition-colors"
+                    title="দোকানদার প্রোফাইল"
+                  >
+                    <UserIcon className="w-5 h-5" />
+                  </button>
+                )}
               </>
             )}
             <button onClick={logout} className="p-2 hover:bg-[#f5f5f0] rounded-full text-red-500 transition-colors">
@@ -1243,6 +1591,56 @@ export default function App() {
                   <p className="text-xl font-bold text-red-600">৳ {customerStats.expense.toLocaleString()}</p>
                 </div>
               </div>
+            </div>
+
+            {/* Payment Notifications History */}
+            <div className="space-y-4 mb-8">
+              <div className="flex items-center justify-between px-2">
+                <h3 className="text-sm font-bold text-[#5A5A40] uppercase tracking-wider">পেমেন্ট হিস্টরি</h3>
+                <CreditCard className="w-4 h-4 text-[#5A5A40]" />
+              </div>
+              {paymentNotifications.length > 0 ? (
+                paymentNotifications.map((n) => (
+                  <div key={n.id} className="bg-white p-5 rounded-[24px] border border-[#e5e5e0] shadow-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "w-10 h-10 rounded-xl flex items-center justify-center",
+                          n.status === 'approved' ? "bg-green-100 text-green-600" : 
+                          n.status === 'rejected' ? "bg-red-100 text-red-600" : 
+                          "bg-yellow-100 text-yellow-600"
+                        )}>
+                          {n.status === 'approved' ? <CheckCircle className="w-5 h-5" /> : 
+                           n.status === 'rejected' ? <XCircle className="w-5 h-5" /> : 
+                           <Clock className="w-5 h-5" />}
+                        </div>
+                        <div>
+                          <p className="font-bold text-[#1a1a1a]">৳ {n.amount.toLocaleString()}</p>
+                          <p className="text-[10px] text-[#5A5A40] uppercase font-bold">{n.method} • {format(n.timestamp.toDate(), 'd MMMM, yyyy', { locale: bn })}</p>
+                        </div>
+                      </div>
+                      <div className={cn(
+                        "px-3 py-1 rounded-full text-[10px] font-bold uppercase",
+                        n.status === 'approved' ? "bg-green-100 text-green-600" : 
+                        n.status === 'rejected' ? "bg-red-100 text-red-600" : 
+                        "bg-yellow-100 text-yellow-600"
+                      )}>
+                        {n.status === 'approved' ? 'অনুমোদিত' : 
+                         n.status === 'rejected' ? 'প্রত্যাখ্যাত' : 
+                         'অপেক্ষমান'}
+                      </div>
+                    </div>
+                    <div className="bg-[#f5f5f0] p-3 rounded-xl text-[10px] text-[#5A5A40]">
+                      <p><span className="font-bold">ট্রানজেকশন আইডি:</span> {n.transactionId}</p>
+                      <p><span className="font-bold">প্রেরকের ফোন:</span> {n.senderPhone}</p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="text-center py-8 bg-white rounded-[24px] border border-dashed border-gray-300">
+                  <p className="text-gray-400 text-sm italic">কোন পেমেন্ট হিস্টরি পাওয়া যায়নি</p>
+                </div>
+              )}
             </div>
 
             {/* Transactions List */}
@@ -1995,13 +2393,13 @@ export default function App() {
                         {n.status === 'pending' && (
                           <div className="flex gap-2">
                             <button 
-                              onClick={() => handleUpdateNotificationStatus(n.id, 'rejected')}
+                              onClick={() => handleUpdateNotificationStatus(n, 'rejected')}
                               className="flex-1 py-2 rounded-xl font-bold text-red-600 border border-red-200 hover:bg-red-50 transition-colors"
                             >
                               প্রত্যাখ্যান
                             </button>
                             <button 
-                              onClick={() => handleUpdateNotificationStatus(n.id, 'approved')}
+                              onClick={() => handleUpdateNotificationStatus(n, 'approved')}
                               className="flex-1 bg-green-600 text-white py-2 rounded-xl font-bold hover:bg-green-700 transition-colors"
                             >
                               অনুমোদন
