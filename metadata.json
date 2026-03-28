@@ -1,0 +1,5 @@
+{
+  "name": "রাজগঞ্জ সুপার শপ (Rajganj Super Shop)",
+  "description": "রাজগঞ্জ সুপার শপের ডিজিটাল টালিখাতা এবং কাস্টমার ম্যানেজমেন্ট অ্যাপ।",
+  "requestFramePermissions": ["camera"]
+}

@@ -1,0 +1,93 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "A customer in the tally system.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The customer's full name." },
+        "phone": { "type": "string", "description": "The customer's phone number." },
+        "address": { "type": "string", "description": "The customer's address." },
+        "photoUrl": { "type": "string", "description": "URL to the customer's profile picture." },
+        "totalBalance": { "type": "number", "description": "The current balance of the customer." },
+        "ownerId": { "type": "string", "description": "The UID of the shopkeeper who owns this customer record." },
+        "customerUid": { "type": "string", "description": "The UID of the customer's own Firebase Auth account (if registered)." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the customer was added." }
+      },
+      "required": ["name", "phone", "totalBalance", "ownerId", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "A user in the system (shopkeeper or customer).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID." },
+        "role": { "type": "string", "enum": ["shopkeeper", "customer"], "description": "The user's role." },
+        "phone": { "type": "string", "description": "The user's phone number (for customers)." }
+      },
+      "required": ["uid", "role"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "A credit or debit transaction for a customer.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string", "description": "The ID of the customer this transaction belongs to." },
+        "amount": { "type": "number", "description": "The transaction amount." },
+        "type": { "type": "string", "enum": ["credit", "debit"], "description": "The type of transaction." },
+        "note": { "type": "string", "description": "A brief description of the transaction." },
+        "ownerId": { "type": "string", "description": "The UID of the user who owns this transaction record." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the transaction occurred." }
+      },
+      "required": ["customerId", "amount", "type", "ownerId", "timestamp"]
+    },
+    "PaymentNotification": {
+      "title": "PaymentNotification",
+      "description": "A notification sent by a customer when they make a payment.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string", "description": "The ID of the customer who sent the notification." },
+        "customerName": { "type": "string", "description": "The name of the customer." },
+        "amount": { "type": "number", "description": "The amount paid." },
+        "method": { "type": "string", "enum": ["bkash", "nagad", "rocket"], "description": "The payment method used." },
+        "senderPhone": { "type": "string", "description": "The phone number used to send the payment." },
+        "transactionId": { "type": "string", "description": "The transaction ID or tracking number." },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"], "description": "The status of the notification." },
+        "ownerId": { "type": "string", "description": "The UID of the shopkeeper who should receive this notification." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the notification was sent." }
+      },
+      "required": ["customerId", "customerName", "amount", "method", "senderPhone", "transactionId", "status", "ownerId", "timestamp"]
+    },
+    "InAppMessage": {
+      "title": "InAppMessage",
+      "description": "A message sent between a shopkeeper and a customer.",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string", "description": "The UID of the sender." },
+        "receiverId": { "type": "string", "description": "The UID of the receiver." },
+        "message": { "type": "string", "description": "The message content." },
+        "isRead": { "type": "boolean", "description": "Whether the message has been read." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the message was sent." }
+      },
+      "required": ["senderId", "receiverId", "message", "isRead", "timestamp"]
+    }
+  },
+  "firestore": {
+    "customers": {
+      "schema": "Customer",
+      "description": "Collection of customer records."
+    },
+    "transactions": {
+      "schema": "Transaction",
+      "description": "Collection of transaction records."
+    },
+    "payment_notifications": {
+      "schema": "PaymentNotification",
+      "description": "Collection of payment notifications sent by customers."
+    },
+    "in_app_messages": {
+      "schema": "InAppMessage",
+      "description": "Collection of messages between shopkeepers and customers."
+    }
+  }
+}

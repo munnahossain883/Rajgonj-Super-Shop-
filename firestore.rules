@@ -1,0 +1,150 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: customers
+    // Document ID: auto-generated
+    // Fields:
+    //   - name: string (required, 1-100 chars)
+    //   - phone: string (required, 10-15 chars)
+    //   - address: string (optional, < 200 chars)
+    //   - photoUrl: string (optional, URL format)
+    //   - totalBalance: number (required)
+    //   - ownerId: string (required, must match auth.uid)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: transactions
+    // Document ID: auto-generated
+    // Fields:
+    //   - customerId: string (required, valid customer ID)
+    //   - amount: number (required, positive)
+    //   - type: string (required, 'credit' or 'debit')
+    //   - note: string (optional, < 500 chars)
+    //   - ownerId: string (required, must match auth.uid)
+    //   - timestamp: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isCustomer(customerId) {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/customers/$(customerId)).data.customerUid == request.auth.uid);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'shopkeeper') ||
+          (request.auth.token.email == "munnahossain883@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['name', 'phone', 'totalBalance', 'ownerId', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.phone is string &&
+             data.totalBalance is number &&
+             data.ownerId is string &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['customerId', 'amount', 'type', 'ownerId', 'timestamp']) &&
+             data.customerId is string &&
+             data.amount is number && data.amount > 0 &&
+             data.type in ['credit', 'debit'] &&
+             data.ownerId is string &&
+             data.timestamp is timestamp;
+    }
+
+    function isValidPaymentNotification(data) {
+      return data.keys().hasAll(['customerId', 'customerName', 'amount', 'method', 'senderPhone', 'transactionId', 'status', 'ownerId', 'timestamp']) &&
+             data.customerId is string &&
+             data.customerName is string &&
+             data.amount is number && data.amount > 0 &&
+             data.method in ['bkash', 'nagad', 'rocket'] &&
+             data.senderPhone is string &&
+             data.transactionId is string &&
+             data.status in ['pending', 'approved', 'rejected'] &&
+             data.ownerId is string &&
+             data.timestamp is timestamp;
+    }
+
+    function isValidInAppMessage(data) {
+      return data.keys().hasAll(['senderId', 'receiverId', 'message', 'isRead', 'timestamp']) &&
+             data.senderId is string &&
+             data.receiverId is string &&
+             data.message is string && data.message.size() > 0 && data.message.size() <= 2000 &&
+             data.isRead is bool &&
+             data.timestamp is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin() || 
+        (isAuthenticated() && get(/databases/$(database)/documents/users/$(userId)).data.role == 'shopkeeper');
+      allow create, update: if isOwner(userId);
+    }
+
+    match /in_app_messages/{messageId} {
+      allow read: if isAuthenticated() && (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidInAppMessage(request.resource.data) && request.resource.data.senderId == request.auth.uid;
+      allow update: if isAuthenticated() && (resource.data.receiverId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']));
+      allow delete: if isAuthenticated() && (resource.data.senderId == request.auth.uid || isAdmin());
+    }
+
+    match /customers/{customerId} {
+      // Allow read if owner, linked customer, admin, or if authenticated and searching for own record to link
+      allow read: if isAuthenticated() && (
+        isOwner(resource.data.ownerId) || 
+        (resource.data.customerUid == request.auth.uid) || 
+        isAdmin() ||
+        (!('customerUid' in resource.data)) // Allow finding unlinked records
+      );
+      allow create: if isAuthenticated() && isValidCustomer(request.resource.data) && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        (isOwner(resource.data.ownerId) && isValidCustomer(request.resource.data)) ||
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerUid']) && !('customerUid' in resource.data)) ||
+        (resource.data.customerUid == request.auth.uid && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'address', 'photoUrl']) &&
+         request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 100)
+      );
+      allow delete: if isAuthenticated() && (isOwner(resource.data.ownerId) || isAdmin());
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if isOwner(resource.data.ownerId) || isCustomer(resource.data.customerId) || isAdmin();
+      allow create: if isAuthenticated() && isValidTransaction(request.resource.data) && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isAuthenticated() && isOwner(resource.data.ownerId) && isValidTransaction(request.resource.data);
+      allow delete: if isAuthenticated() && (isOwner(resource.data.ownerId) || isAdmin());
+    }
+
+    match /payment_notifications/{notificationId} {
+      allow read: if isAuthenticated() && (isOwner(resource.data.ownerId) || resource.data.customerId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidPaymentNotification(request.resource.data);
+      allow update: if isAuthenticated() && (isOwner(resource.data.ownerId) || isAdmin());
+      allow delete: if isAuthenticated() && (isOwner(resource.data.ownerId) || isAdmin());
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
