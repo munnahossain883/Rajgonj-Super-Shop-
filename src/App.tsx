@@ -43,7 +43,9 @@ import {
   Bell,
   CreditCard,
   MessageSquare,
-  Send
+  Send,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { bn } from 'date-fns/locale';
@@ -199,6 +201,7 @@ export default function App() {
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<any>(null);
   const [isCustomerLogin, setIsCustomerLogin] = useState(false);
   const [isCustomerRegister, setIsCustomerRegister] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [shopkeeperInfo, setShopkeeperInfo] = useState<{ email?: string; phone?: string; name?: string } | null>(null);
   const [shopkeeperProfile, setShopkeeperProfile] = useState<{ name?: string; email?: string; phone?: string; role?: string } | null>(null);
@@ -1033,14 +1036,23 @@ export default function App() {
               )}
               <div>
                 <label className="block text-xs font-bold text-[#5A5A40] uppercase tracking-wider mb-1">পাসওয়ার্ড</label>
-                <input 
-                  name="password" 
-                  type="password" 
-                  required 
-                  minLength={6}
-                  className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 focus:ring-2 focus:ring-[#5A5A40] outline-none"
-                  placeholder="******"
-                />
+                <div className="relative">
+                  <input 
+                    name="password" 
+                    type={showPassword ? "text" : "password"} 
+                    required 
+                    minLength={6}
+                    className="w-full bg-[#f5f5f0] border-none rounded-2xl px-4 py-3 pr-12 focus:ring-2 focus:ring-[#5A5A40] outline-none"
+                    placeholder="******"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-[#5A5A40] hover:text-[#1a1a1a] transition-colors"
+                  >
+                    {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
               </div>
               <button 
                 disabled={authLoading}
